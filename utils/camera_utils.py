@@ -10,6 +10,7 @@
 #
 
 from scene.cameras import Camera
+import os
 import numpy as np
 from utils.graphics_utils import fov2focal
 from PIL import Image
@@ -18,7 +19,14 @@ import cv2
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dataset):
-    image = Image.open(cam_info.image_path)
+    if os.path.isfile(cam_info.image_path):
+        image = Image.open(cam_info.image_path)
+    else:
+        # Novel-view poses without GT: use black placeholder at CSV resolution
+        w = int(cam_info.width) if cam_info.width else 1
+        h = int(cam_info.height) if cam_info.height else 1
+        print(f"[Warning] Image not found, using black placeholder ({w}x{h}): {cam_info.image_path}")
+        image = Image.new("RGB", (w, h), (0, 0, 0))
 
     if cam_info.depth_path != "":
         try:

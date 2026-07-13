@@ -27,6 +27,15 @@ except:
     SPARSE_ADAM_AVAILABLE = False
 
 
+def _output_image_name(view, idx):
+    """Prefer original filename (from CSV / COLMAP); fall back to index."""
+    if getattr(view, "image_name", None):
+        stem = os.path.splitext(os.path.basename(view.image_name))[0]
+        if stem:
+            return stem + ".png"
+    return "{0:05d}.png".format(idx)
+
+
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, train_test_exp, separate_sh):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
@@ -42,8 +51,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             rendering = rendering[..., rendering.shape[-1] // 2:]
             gt = gt[..., gt.shape[-1] // 2:]
 
-        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+        out_name = _output_image_name(view, idx)
+        torchvision.utils.save_image(rendering, os.path.join(render_path, out_name))
+        torchvision.utils.save_image(gt, os.path.join(gts_path, out_name))
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, separate_sh: bool):
     with torch.no_grad():

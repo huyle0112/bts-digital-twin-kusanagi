@@ -1,0 +1,10 @@
+plyfile
+tqdm
+opencv-python
+joblib
+ninja
+cmake
+
+./submodules/diff-gaussian-rasterization
+./submodules/simple-knn
+./submodules/fused-ssim

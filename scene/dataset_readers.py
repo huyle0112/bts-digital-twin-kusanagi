@@ -11,8 +11,9 @@
 
 import os
 import sys
+import csv
 from PIL import Image
-from typing import NamedTuple
+from typing import NamedTuple, Optional, Tuple
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
@@ -142,19 +143,73 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
+def resolve_colmap_and_test_paths(path: str) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    Resolve COLMAP root + optional test CSV layout.
+
+    Supports:
+      1) Competition layout:
+           <path>/train/sparse/0  +  <path>/test/test_poses.csv, <path>/test/images
+      2) source_path points at train/:
+           <path>/sparse/0  +  sibling <path>/../test/test_poses.csv
+      3) Standard 3DGS layout:
+           <path>/sparse/0  +  optional <path>/test_poses.csv, <path>/test_images
+    """
+    path = os.path.abspath(path)
+
+    # Competition root: scenes/{train,test}
+    train_sparse = os.path.join(path, "train", "sparse")
+    if os.path.isdir(train_sparse):
+        colmap_root = os.path.join(path, "train")
+        test_csv = os.path.join(path, "test", "test_poses.csv")
+        test_images = os.path.join(path, "test", "images")
+        if os.path.isfile(test_csv):
+            return colmap_root, test_csv, test_images
+        return colmap_root, None, None
+
+    # source_path is the train folder (or standard scene root with sparse/)
+    if os.path.isdir(os.path.join(path, "sparse")):
+        colmap_root = path
+        sibling_csv = os.path.join(os.path.dirname(path), "test", "test_poses.csv")
+        sibling_images = os.path.join(os.path.dirname(path), "test", "images")
+        if os.path.isfile(sibling_csv):
+            return colmap_root, sibling_csv, sibling_images
+
+        root_csv = os.path.join(path, "test_poses.csv")
+        if os.path.isfile(root_csv):
+            for images_dir in (
+                os.path.join(path, "test_images"),
+                os.path.join(path, "test", "images"),
+            ):
+                if os.path.isdir(images_dir):
+                    return colmap_root, root_csv, images_dir
+            return colmap_root, root_csv, os.path.join(path, "test_images")
+
+        nested_csv = os.path.join(path, "test", "test_poses.csv")
+        if os.path.isfile(nested_csv):
+            return colmap_root, nested_csv, os.path.join(path, "test", "images")
+
+        return colmap_root, None, None
+
+    return path, None, None
+
+
 def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
+    colmap_root, test_csv, test_images_folder = resolve_colmap_and_test_paths(path)
+    sparse_dir = os.path.join(colmap_root, "sparse", "0")
+
     try:
-        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
-        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+        cameras_extrinsic_file = os.path.join(sparse_dir, "images.bin")
+        cameras_intrinsic_file = os.path.join(sparse_dir, "cameras.bin")
         cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
     except:
-        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
-        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
+        cameras_extrinsic_file = os.path.join(sparse_dir, "images.txt")
+        cameras_intrinsic_file = os.path.join(sparse_dir, "cameras.txt")
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
-    depth_params_file = os.path.join(path, "sparse/0", "depth_params.json")
+    depth_params_file = os.path.join(sparse_dir, "depth_params.json")
     ## if depth_params_file isnt there AND depths file is here -> throw error
     depths_params = None
     if depths != "":
@@ -176,7 +231,10 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             print(f"An unexpected error occurred when trying to open depth_params.json file: {e}")
             sys.exit(1)
 
-    if eval:
+    # When test poses come from CSV, train set is the full COLMAP reconstruction.
+    if test_csv is not None:
+        test_cam_names_list = []
+    elif eval:
         if "360" in path:
             llffhold = 8
         if llffhold:
@@ -185,7 +243,7 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             cam_names = sorted(cam_names)
             test_cam_names_list = [name for idx, name in enumerate(cam_names) if idx % llffhold == 0]
         else:
-            with open(os.path.join(path, "sparse/0", "test.txt"), 'r') as file:
+            with open(os.path.join(sparse_dir, "test.txt"), 'r') as file:
                 test_cam_names_list = [line.strip() for line in file]
     else:
         test_cam_names_list = []
@@ -193,18 +251,24 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     reading_dir = "images" if images == None else images
     cam_infos_unsorted = readColmapCameras(
         cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=depths_params,
-        images_folder=os.path.join(path, reading_dir), 
-        depths_folder=os.path.join(path, depths) if depths != "" else "", test_cam_names_list=test_cam_names_list)
+        images_folder=os.path.join(colmap_root, reading_dir),
+        depths_folder=os.path.join(colmap_root, depths) if depths != "" else "",
+        test_cam_names_list=test_cam_names_list)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
-    test_cam_infos = [c for c in cam_infos if c.is_test]
+
+    if test_csv is not None:
+        print(f"Loading test cameras from CSV: {test_csv}")
+        test_cam_infos = readTestPoseCSV(test_csv, test_images_folder)
+    else:
+        test_cam_infos = [c for c in cam_infos if c.is_test]
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    ply_path = os.path.join(path, "sparse/0/points3D.ply")
-    bin_path = os.path.join(path, "sparse/0/points3D.bin")
-    txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    ply_path = os.path.join(sparse_dir, "points3D.ply")
+    bin_path = os.path.join(sparse_dir, "points3D.bin")
+    txt_path = os.path.join(sparse_dir, "points3D.txt")
     if not os.path.exists(ply_path):
         print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
         try:
@@ -313,3 +377,82 @@ sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo
 }
+
+def readTestPoseCSV(csv_path, test_image_folder):
+    """
+    Build CameraInfo list from competition test_poses.csv.
+
+    Expected columns:
+      image_name, qw, qx, qy, qz, tx, ty, tz, fx, fy, cx, cy, width, height
+
+    Quaternion (w,x,y,z) and translation (x,y,z) use COLMAP world-to-camera
+    convention, matching train sparse reconstruction.
+    fx/fy are focal lengths in pixels; width/height are render resolution.
+    cx/cy are principal points (assumed image center by the 3DGS rasterizer).
+    """
+    if test_image_folder is None:
+        test_image_folder = os.path.dirname(csv_path)
+
+    cam_infos = []
+    missing_images = 0
+
+    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        required = {"image_name", "qw", "qx", "qy", "qz", "tx", "ty", "tz",
+                    "fx", "fy", "width", "height"}
+        if reader.fieldnames is None:
+            raise ValueError(f"Empty or invalid CSV: {csv_path}")
+        fields = {name.strip() for name in reader.fieldnames}
+        missing_cols = required - fields
+        if missing_cols:
+            raise ValueError(
+                f"test_poses.csv missing columns {sorted(missing_cols)}. "
+                f"Found: {reader.fieldnames}"
+            )
+
+        for idx, row in enumerate(reader):
+            image_name = row["image_name"].strip()
+            qw = float(row["qw"])
+            qx = float(row["qx"])
+            qy = float(row["qy"])
+            qz = float(row["qz"])
+            tx = float(row["tx"])
+            ty = float(row["ty"])
+            tz = float(row["tz"])
+            fx = float(row["fx"])
+            fy = float(row["fy"])
+            width = int(float(row["width"]))
+            height = int(float(row["height"]))
+
+            # COLMAP W2C: R_store is transposed for glm, T is tvec
+            qvec = np.array([qw, qx, qy, qz], dtype=np.float64)
+            R = np.transpose(qvec2rotmat(qvec))
+            T = np.array([tx, ty, tz], dtype=np.float64)
+
+            FovY = focal2fov(fy, height)
+            FovX = focal2fov(fx, width)
+
+            image_path = os.path.join(test_image_folder, image_name)
+            if not os.path.isfile(image_path):
+                missing_images += 1
+
+            cam_infos.append(CameraInfo(
+                uid=idx,
+                R=R,
+                T=T,
+                FovY=FovY,
+                FovX=FovX,
+                depth_params=None,
+                image_path=image_path,
+                image_name=image_name,
+                depth_path="",
+                width=width,
+                height=height,
+                is_test=True,
+            ))
+
+    print(f"Loaded {len(cam_infos)} test cameras from {csv_path}")
+    if missing_images:
+        print(f"Warning: {missing_images}/{len(cam_infos)} GT images not found under {test_image_folder}")
+        print("Missing files will use a black placeholder of CSV width/height.")
+    return cam_infos
