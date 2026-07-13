@@ -12,6 +12,7 @@
 import os
 import random
 import json
+import numpy as np
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
@@ -53,8 +54,20 @@ class Scene:
             assert False, "Could not recognize scene type! Expected sparse/ or train/sparse/ (COLMAP) or transforms_train.json (Blender)."
 
         if not self.loaded_iter:
-            with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
-                dest_file.write(src_file.read())
+            dest_ply = os.path.join(self.model_path, "input.ply")
+            if scene_info.ply_path and os.path.isfile(scene_info.ply_path):
+                with open(scene_info.ply_path, 'rb') as src_file, open(dest_ply, 'wb') as dest_file:
+                    dest_file.write(src_file.read())
+            elif scene_info.point_cloud is not None:
+                # Source was .bin on a read-only FS: write input.ply into output model folder
+                from scene.dataset_readers import storePly
+                storePly(
+                    dest_ply,
+                    scene_info.point_cloud.points,
+                    (np.clip(scene_info.point_cloud.colors, 0.0, 1.0) * 255).astype(np.uint8),
+                )
+            else:
+                print("[Warning] No input point cloud file to copy into model folder.")
             json_cams = []
             camlist = []
             if scene_info.test_cameras:

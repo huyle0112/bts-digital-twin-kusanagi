@@ -304,17 +304,39 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     ply_path = os.path.join(sparse_dir, "points3D.ply")
     bin_path = os.path.join(sparse_dir, "points3D.bin")
     txt_path = os.path.join(sparse_dir, "points3D.txt")
-    if not os.path.exists(ply_path):
-        print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
+    pcd = None
+
+    # Prefer existing .ply; otherwise load points from COLMAP .bin/.txt directly.
+    # On read-only filesystems (e.g. Kaggle /kaggle/input) we must NOT require writing .ply.
+    if os.path.exists(ply_path):
+        try:
+            pcd = fetchPly(ply_path)
+        except Exception as e:
+            print(f"[Warning] Failed to read {ply_path}: {e}")
+            pcd = None
+
+    if pcd is None and (os.path.exists(bin_path) or os.path.exists(txt_path)):
+        print("Loading point cloud from points3D.bin/.txt (no writable points3D.ply required).")
         try:
             xyz, rgb, _ = read_points3D_binary(bin_path)
-        except:
+        except Exception:
             xyz, rgb, _ = read_points3D_text(txt_path)
-        storePly(ply_path, xyz, rgb)
-    try:
-        pcd = fetchPly(ply_path)
-    except:
-        pcd = None
+        pcd = BasicPointCloud(
+            points=xyz,
+            colors=rgb.astype(np.float64) / 255.0,
+            normals=np.zeros_like(xyz),
+        )
+        # Best-effort: cache .ply next to sparse if the folder is writable
+        try:
+            storePly(ply_path, xyz, rgb)
+            print(f"Cached points3D.ply at {ply_path}")
+        except OSError:
+            print(f"[Info] Sparse dir is read-only; using points from .bin in memory. "
+                  f"input.ply will be written under the model output folder.")
+            ply_path = ""  # Scene will write input.ply from point_cloud
+
+    if pcd is None:
+        print("[Warning] No point cloud loaded from sparse model.")
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
