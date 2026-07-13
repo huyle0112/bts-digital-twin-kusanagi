@@ -86,17 +86,52 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         R = np.transpose(qvec2rotmat(extr.qvec))
         T = np.array(extr.tvec)
 
-        if intr.model=="SIMPLE_PINHOLE":
+        # Ideal models (undistorted). Distorted models are approximated as pinhole
+        # by dropping radial/tangential terms — fine when |k| is small.
+        if intr.model == "SIMPLE_PINHOLE":
+            # params: f, cx, cy
             focal_length_x = intr.params[0]
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
-        elif intr.model=="PINHOLE":
+        elif intr.model == "PINHOLE":
+            # params: fx, fy, cx, cy
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
+        elif intr.model in ("SIMPLE_RADIAL", "SIMPLE_RADIAL_FISHEYE"):
+            # params: f, cx, cy, k
+            focal_length_x = intr.params[0]
+            k = float(intr.params[3]) if len(intr.params) > 3 else 0.0
+            if abs(k) > 1e-6 and idx == 0:
+                print(f"\n[Warning] Camera model {intr.model} has distortion k={k:.6g}; "
+                      f"approximating as SIMPLE_PINHOLE (ignore k). "
+                      f"For best quality run COLMAP image_undistorter.")
+            FovY = focal2fov(focal_length_x, height)
+            FovX = focal2fov(focal_length_x, width)
+        elif intr.model in ("RADIAL", "RADIAL_FISHEYE"):
+            # params: f, cx, cy, k1, k2
+            focal_length_x = intr.params[0]
+            if idx == 0:
+                print(f"\n[Warning] Camera model {intr.model}; approximating as SIMPLE_PINHOLE (ignore k1,k2).")
+            FovY = focal2fov(focal_length_x, height)
+            FovX = focal2fov(focal_length_x, width)
+        elif intr.model in ("OPENCV", "OPENCV_FISHEYE", "FULL_OPENCV"):
+            # params: fx, fy, cx, cy, ...distortion
+            focal_length_x = intr.params[0]
+            focal_length_y = intr.params[1]
+            if idx == 0:
+                print(f"\n[Warning] Camera model {intr.model}; approximating as PINHOLE (ignore distortion). "
+                      f"For best quality run COLMAP image_undistorter.")
+            FovY = focal2fov(focal_length_y, height)
+            FovX = focal2fov(focal_length_x, width)
         else:
-            assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+            assert False, (
+                f"Colmap camera model not handled: {intr.model}. "
+                f"Supported (exact): PINHOLE, SIMPLE_PINHOLE. "
+                f"Supported (approx, ignore distortion): SIMPLE_RADIAL, RADIAL, OPENCV. "
+                f"Otherwise undistort with COLMAP image_undistorter first."
+            )
 
         n_remove = len(extr.name.split('.')[-1]) + 1
         depth_params = None
