@@ -48,7 +48,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
-    scene = Scene(dataset, gaussians)
+    # Train only on train images+poses. Test poses/images are for render/compare later.
+    scene = Scene(dataset, gaussians, load_test_cameras=False)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -217,11 +218,14 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
 
-    # Report test and samples of training set
+    # Mid-train eval on train samples only (test set is not loaded during training).
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+        train_cams = scene.getTrainCameras()
+        validation_configs = (
+            {'name': 'test', 'cameras': scene.getTestCameras()},
+            {'name': 'train', 'cameras': [train_cams[idx % len(train_cams)] for idx in range(5, 30, 5)] if train_cams else []},
+        )
 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:

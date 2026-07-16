@@ -23,9 +23,11 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
-        """b
-        :param path: Path to colmap scene main folder.
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], load_test_cameras=True):
+        """
+        :param load_test_cameras: If False (typical for training), only load train
+            cameras with real images/poses. Test poses are loaded later by render.py
+            for comparison / novel-view synthesis, not used as training targets.
         """
         self.model_path = args.model_path
         self.loaded_iter = None
@@ -46,10 +48,16 @@ class Scene:
             or os.path.exists(os.path.join(args.source_path, "train", "sparse"))
         )
         if has_colmap:
-            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
+            scene_info = sceneLoadTypeCallbacks["Colmap"](
+                args.source_path, args.images, args.depths, args.eval, args.train_test_exp,
+                load_test=load_test_cameras)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.depths, args.eval)
+            # Blender path always returns test split; drop it when training-only.
+            if not load_test_cameras and scene_info.test_cameras:
+                print(f"[Info] Skipping {len(scene_info.test_cameras)} Blender test camera(s) during training.")
+                scene_info = scene_info._replace(test_cameras=[])
         else:
             assert False, "Could not recognize scene type! Expected sparse/ or train/sparse/ (COLMAP) or transforms_train.json (Blender)."
 
@@ -88,8 +96,11 @@ class Scene:
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, False)
-            print("Loading Test Cameras")
-            self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
+            if load_test_cameras and scene_info.test_cameras:
+                print("Loading Test Cameras")
+                self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
+            else:
+                self.test_cameras[resolution_scale] = []
 
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,

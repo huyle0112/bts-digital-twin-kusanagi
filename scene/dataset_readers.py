@@ -229,7 +229,11 @@ def resolve_colmap_and_test_paths(path: str) -> Tuple[str, Optional[str], Option
     return path, None, None
 
 
-def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
+def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8, load_test=True):
+    """
+    load_test: If False, only build train cameras (for optimization). Test poses/images
+    are left for render/compare pipelines and are not returned.
+    """
     colmap_root, test_csv, test_images_folder = resolve_colmap_and_test_paths(path)
     sparse_dir = os.path.join(colmap_root, "sparse", "0")
 
@@ -291,13 +295,23 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         test_cam_names_list=test_cam_names_list)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
+    # Train set = COLMAP / reconstruction images that have poses + files under images/.
+    # Never mix test CSV poses into training.
     train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
+    print(f"Train cameras (optimization targets): {len(train_cam_infos)}")
 
-    if test_csv is not None:
-        print(f"Loading test cameras from CSV: {test_csv}")
+    if not load_test:
+        test_cam_infos = []
+        if test_csv is not None:
+            print(f"[Info] Not loading test poses during this step (CSV present: {test_csv}). "
+                  f"Use render.py later for novel-view / comparison.")
+    elif test_csv is not None:
+        print(f"Loading test poses for render/compare (not training targets): {test_csv}")
         test_cam_infos = readTestPoseCSV(test_csv, test_images_folder)
     else:
         test_cam_infos = [c for c in cam_infos if c.is_test]
+        if test_cam_infos:
+            print(f"Held-out test cameras from COLMAP split: {len(test_cam_infos)}")
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 

@@ -17,15 +17,21 @@ from PIL import Image
 import cv2
 
 WARNED = False
+_MISSING_IMAGE_WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dataset):
     if os.path.isfile(cam_info.image_path):
         image = Image.open(cam_info.image_path)
     else:
-        # Novel-view poses without GT: use black placeholder at CSV resolution
+        # Novel-view poses without GT (e.g. test_poses.csv): black placeholder for size only.
+        # Not a training target — used when rendering test views for comparison.
         w = int(cam_info.width) if cam_info.width else 1
         h = int(cam_info.height) if cam_info.height else 1
-        print(f"[Warning] Image not found, using black placeholder ({w}x{h}): {cam_info.image_path}")
+        global _MISSING_IMAGE_WARNED
+        if not _MISSING_IMAGE_WARNED:
+            print(f"[Info] Image file missing for some cameras (e.g. test novel-views); "
+                  f"using black placeholder for resolution only. First: {cam_info.image_path}")
+            _MISSING_IMAGE_WARNED = True
         image = Image.new("RGB", (w, h), (0, 0, 0))
 
     if cam_info.depth_path != "":
