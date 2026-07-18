@@ -70,14 +70,29 @@ def getNerfppNorm(cam_info):
     return {"translate": translate, "radius": radius}
 
 def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, test_cam_names_list):
+    """
+    Load COLMAP cameras that have a matching image file under images_folder.
+    Poses present in images.bin but without an on-disk image are skipped so
+    training never optimizes against black placeholders.
+    """
     cam_infos = []
+    skipped_missing = []
+    n_total = len(cam_extrinsics)
+
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
-        # the exact output you're looking for:
-        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
+        sys.stdout.write("Reading camera {}/{}".format(idx + 1, n_total))
         sys.stdout.flush()
 
         extr = cam_extrinsics[key]
+        image_name = extr.name
+        image_path = os.path.join(images_folder, image_name)
+
+        # Only keep poses that have a real training image on disk.
+        if not os.path.isfile(image_path):
+            skipped_missing.append(image_name)
+            continue
+
         intr = cam_intrinsics[extr.camera_id]
         height = intr.height
         width = intr.width
@@ -103,7 +118,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
             # params: f, cx, cy, k
             focal_length_x = intr.params[0]
             k = float(intr.params[3]) if len(intr.params) > 3 else 0.0
-            if abs(k) > 1e-6 and idx == 0:
+            if abs(k) > 1e-6 and len(cam_infos) == 0:
                 print(f"\n[Warning] Camera model {intr.model} has distortion k={k:.6g}; "
                       f"approximating as SIMPLE_PINHOLE (ignore k). "
                       f"For best quality run COLMAP image_undistorter.")
@@ -112,7 +127,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         elif intr.model in ("RADIAL", "RADIAL_FISHEYE"):
             # params: f, cx, cy, k1, k2
             focal_length_x = intr.params[0]
-            if idx == 0:
+            if len(cam_infos) == 0:
                 print(f"\n[Warning] Camera model {intr.model}; approximating as SIMPLE_PINHOLE (ignore k1,k2).")
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
@@ -120,7 +135,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
             # params: fx, fy, cx, cy, ...distortion
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
-            if idx == 0:
+            if len(cam_infos) == 0:
                 print(f"\n[Warning] Camera model {intr.model}; approximating as PINHOLE (ignore distortion). "
                       f"For best quality run COLMAP image_undistorter.")
             FovY = focal2fov(focal_length_y, height)
@@ -141,8 +156,6 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
             except:
                 print("\n", key, "not found in depths_params")
 
-        image_path = os.path.join(images_folder, extr.name)
-        image_name = extr.name
         depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" else ""
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
@@ -151,6 +164,21 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         cam_infos.append(cam_info)
 
     sys.stdout.write('\n')
+    if skipped_missing:
+        print(
+            f"[Info] Skipped {len(skipped_missing)}/{n_total} COLMAP pose(s) with no image file "
+            f"under {images_folder} (not used for training)."
+        )
+        if len(skipped_missing) <= 5:
+            print(f"       e.g. {skipped_missing}")
+        else:
+            print(f"       e.g. {skipped_missing[:5]} ...")
+    print(f"[Info] Kept {len(cam_infos)}/{n_total} COLMAP camera(s) with matching images.")
+    if len(cam_infos) == 0:
+        raise RuntimeError(
+            f"No COLMAP cameras matched any image under {images_folder}. "
+            f"Check that train images exist and filenames match images.bin."
+        )
     return cam_infos
 
 def fetchPly(path):
@@ -295,10 +323,10 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8, 
         test_cam_names_list=test_cam_names_list)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
-    # Train set = COLMAP / reconstruction images that have poses + files under images/.
-    # Never mix test CSV poses into training.
+    # Train set = COLMAP poses that already matched a real image file on disk
+    # (missing-image poses were dropped in readColmapCameras). Never mix test CSV into training.
     train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
-    print(f"Train cameras (optimization targets): {len(train_cam_infos)}")
+    print(f"Train cameras (optimization targets, image-matched): {len(train_cam_infos)}")
 
     if not load_test:
         test_cam_infos = []
